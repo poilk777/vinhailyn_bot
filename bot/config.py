@@ -78,3 +78,10 @@ class Config:
     )
     # Сколько последних сообщений беседы держать в контексте для ИИ
     history_size: int = field(default_factory=lambda: _int("HISTORY_SIZE", 30))
+
+    # Временно: локальный ID конкретной беседы (число из адреса vk.com/im?sel=c<число>)
+    # для точечной проверки доступа при старте, если беседа не видна через
+    # messages.getConversations (типично для уровня «только упоминания»).
+    debug_chat_local_id: int = field(
+        default_factory=lambda: _int("DEBUG_CHAT_LOCAL_ID", 0)
+    )

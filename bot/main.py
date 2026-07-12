@@ -136,7 +136,7 @@ class Bot:
             log.exception("Ошибка при обработке сообщения")
 
 
-async def startup_diagnostics(vk: VkClient, group: dict) -> None:
+async def startup_diagnostics(vk: VkClient, group: dict, debug_chat_local_id: int = 0) -> None:
     """Проверяем от лица VK API, в каких беседах бот состоит и какой у него доступ."""
     log.info("=== ДИАГНОСТИКА ===")
     log.info(
@@ -156,6 +156,16 @@ async def startup_diagnostics(vk: VkClient, group: dict) -> None:
         log.info("Диалог бота: peer_id=%s type=%s", peer.get("id"), peer.get("type"))
         if peer.get("type") == "chat":
             chat_peers.append(peer["id"])
+
+    if debug_chat_local_id:
+        debug_peer_id = CHAT_PEER_OFFSET + debug_chat_local_id
+        if debug_peer_id not in chat_peers:
+            log.info(
+                "DEBUG_CHAT_LOCAL_ID=%s задан явно, проверяю peer_id=%s точечно "
+                "(даже если его нет в списке диалогов выше)",
+                debug_chat_local_id, debug_peer_id,
+            )
+            chat_peers.append(debug_peer_id)
 
     if not chat_peers:
         log.warning(
@@ -204,7 +214,7 @@ async def main() -> None:
                 "(нужны права «сообщения сообщества») и VK_GROUP_ID"
             )
             raise
-        await startup_diagnostics(vk, group)
+        await startup_diagnostics(vk, group, config.debug_chat_local_id)
         ai = AiClient(
             session,
             base_url=config.timeweb_base_url,
