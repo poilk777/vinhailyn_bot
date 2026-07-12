@@ -38,10 +38,10 @@ class VkClient:
             raise VkApiError(err.get("error_code", 0), err.get("error_msg", "unknown"))
         return payload["response"]
 
-    async def get_own_group_id(self) -> int:
+    async def get_own_group(self) -> dict:
         response = await self.call("groups.getById")
         groups = response["groups"] if isinstance(response, dict) else response
-        return groups[0]["id"]
+        return groups[0]
 
     async def send_message(self, peer_id: int, text: str) -> None:
         # ВК ограничивает сообщение 4096 символами — длинные ответы режем на части

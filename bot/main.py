@@ -10,7 +10,7 @@ import aiohttp
 
 from .ai import AiClient
 from .config import Config
-from .vk import VkClient
+from .vk import VkApiError, VkClient
 
 log = logging.getLogger("bot")
 
@@ -136,6 +136,57 @@ class Bot:
             log.exception("Ошибка при обработке сообщения")
 
 
+async def startup_diagnostics(vk: VkClient, group: dict) -> None:
+    """Проверяем от лица VK API, в каких беседах бот состоит и какой у него доступ."""
+    log.info("=== ДИАГНОСТИКА ===")
+    log.info(
+        "Работаю от имени сообщества «%s» (@%s, id %s). "
+        "Проверьте, что в беседу добавлено именно ОНО.",
+        group.get("name"), group.get("screen_name"), group.get("id"),
+    )
+    try:
+        convs = await vk.call("messages.getConversations", count=20)
+    except VkApiError as exc:
+        log.error("Не удалось получить список диалогов: %s", exc)
+        return
+
+    chat_peers = []
+    for item in convs.get("items", []):
+        peer = item.get("conversation", {}).get("peer", {})
+        log.info("Диалог бота: peer_id=%s type=%s", peer.get("id"), peer.get("type"))
+        if peer.get("type") == "chat":
+            chat_peers.append(peer["id"])
+
+    if not chat_peers:
+        log.warning(
+            "Бот НЕ видит ни одной беседы (peer_id вида 2000000xxx). "
+            "Значит, либо сообщество реально не состоит в беседе, "
+            "либо в беседу добавлено другое сообщество, либо VK ещё не "
+            "показал беседу боту (в режиме «только упоминания» беседа "
+            "появляется здесь после первого упоминания через @)."
+        )
+
+    for peer_id in chat_peers:
+        try:
+            members = await vk.call("messages.getConversationMembers", peer_id=peer_id)
+            log.info(
+                "Беседа %s: ✅ есть доступ ко всей переписке (участников: %s)",
+                peer_id, members.get("count"),
+            )
+        except VkApiError as exc:
+            if exc.code == 917:
+                log.warning(
+                    "Беседа %s: ❌ НЕТ доступа ко всей переписке (ошибка 917) — "
+                    "режим «только упоминания». Откройте беседу → Управление "
+                    "беседой → участники → нажмите на сообщество → включите "
+                    "доступ ко всей переписке (или сделайте администратором).",
+                    peer_id,
+                )
+            else:
+                log.warning("Беседа %s: не удалось проверить доступ: %s", peer_id, exc)
+    log.info("=== КОНЕЦ ДИАГНОСТИКИ ===")
+
+
 async def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -145,13 +196,15 @@ async def main() -> None:
     async with aiohttp.ClientSession() as session:
         vk = VkClient(session, config.vk_group_token, config.vk_api_version)
         try:
-            group_id = config.vk_group_id or await vk.get_own_group_id()
+            group = await vk.get_own_group()
+            group_id = config.vk_group_id or group["id"]
         except Exception:
             log.exception(
                 "Не удалось определить группу VK — проверьте VK_GROUP_TOKEN "
                 "(нужны права «сообщения сообщества») и VK_GROUP_ID"
             )
             raise
+        await startup_diagnostics(vk, group)
         ai = AiClient(
             session,
             base_url=config.timeweb_base_url,
