@@ -3,7 +3,18 @@ services:
     build: .
     container_name: vinhailyn_bot
     restart: unless-stopped
-    env_file: .env
+    environment:
+      VK_GROUP_TOKEN: ${VK_GROUP_TOKEN:?переменная VK_GROUP_TOKEN не задана}
+      VK_GROUP_ID: ${VK_GROUP_ID:-}
+      TIMEWEB_AGENT_ID: ${TIMEWEB_AGENT_ID:?переменная TIMEWEB_AGENT_ID не задана}
+      TIMEWEB_AGENT_TOKEN: ${TIMEWEB_AGENT_TOKEN:?переменная TIMEWEB_AGENT_TOKEN не задана}
+      AI_MODEL: ${AI_MODEL:-gpt-5.4}
+      AI_TEMPERATURE: ${AI_TEMPERATURE:-1.0}
+      AI_MAX_TOKENS: ${AI_MAX_TOKENS:-600}
+      SYSTEM_PROMPT: ${SYSTEM_PROMPT:-}
+      BOT_NAMES: ${BOT_NAMES:-винхайлин,виня,vinhailyn}
+      RANDOM_REPLY_CHANCE: ${RANDOM_REPLY_CHANCE:-0.05}
+      HISTORY_SIZE: ${HISTORY_SIZE:-30}
     logging:
       driver: json-file
       options:
