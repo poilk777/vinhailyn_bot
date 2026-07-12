@@ -27,10 +27,12 @@ class VkClient:
         self._version = api_version
 
     async def call(self, method: str, **params) -> dict | list:
+        log.info("VK API запрос: %s params=%s", method, params)
         params["access_token"] = self._token
         params["v"] = self._version
         async with self._session.post(VK_API_URL + method, data=params) as resp:
             payload = await resp.json()
+        log.info("VK API ответ %s: %s", method, payload)
         if "error" in payload:
             err = payload["error"]
             raise VkApiError(err.get("error_code", 0), err.get("error_msg", "unknown"))
@@ -75,20 +77,30 @@ class VkClient:
                     lp = await self.call("groups.getLongPollServer", group_id=group_id)
                     server, key, ts = lp["server"], lp["key"], lp["ts"]
                     log.info("Long Poll сервер получен")
+                poll_params = {"act": "a_check", "key": key, "ts": ts, "wait": 25}
+                log.info("Long Poll опрос: %s", poll_params)
                 async with self._session.get(
                     server,
-                    params={"act": "a_check", "key": key, "ts": ts, "wait": 25},
+                    params=poll_params,
                     timeout=aiohttp.ClientTimeout(total=60),
                 ) as resp:
                     payload = await resp.json(content_type=None)
+                log.info("Long Poll ответ: %s", payload)
                 if "failed" in payload:
+                    log.warning("Long Poll failed=%s, полный ответ: %s", payload["failed"], payload)
                     if payload["failed"] == 1:
                         ts = payload["ts"]
                     else:
                         server = None  # ключ устарел — переполучаем сервер
                     continue
                 ts = payload["ts"]
-                for update in payload.get("updates", []):
+                updates = payload.get("updates", [])
+                if updates:
+                    log.info(
+                        "Получено %d событие(й): %s",
+                        len(updates), [u.get("type") for u in updates],
+                    )
+                for update in updates:
                     yield update
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 log.warning("Сбой Long Poll (%s), повтор через 5 с", exc)

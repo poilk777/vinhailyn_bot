@@ -120,6 +120,7 @@ class Bot:
     async def run(self) -> None:
         log.info("Бот запущен, группа %s, слушаю Long Poll…", self.group_id)
         async for update in self.vk.listen(self.group_id):
+            log.info("Событие Long Poll: %s", update)
             if update.get("type") != "message_new":
                 continue
             message = update.get("object", {}).get("message")

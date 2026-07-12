@@ -41,6 +41,7 @@ class AiClient:
             "max_tokens": self._max_tokens,
             "stream": False,
         }
+        log.info("Timeweb AI запрос: url=%s body=%s", self._url, body)
         try:
             async with self._session.post(
                 self._url,
@@ -58,6 +59,7 @@ class AiClient:
             log.error("Ошибка запроса к Timeweb AI: %s", exc)
             return None
 
+        log.info("Timeweb AI ответ: %s", payload)
         try:
             text = payload["choices"][0]["message"]["content"].strip()
         except (KeyError, IndexError, AttributeError):
