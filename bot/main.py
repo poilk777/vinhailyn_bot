@@ -73,6 +73,10 @@ class Bot:
     async def handle_message(self, message: dict) -> None:
         peer_id = message["peer_id"]
         from_id = message["from_id"]
+        log.info(
+            "Получено сообщение: peer_id=%s from_id=%s text=%r",
+            peer_id, from_id, message.get("text", "")[:80],
+        )
         if from_id == -self.group_id:
             return  # своё сообщение
 
@@ -98,8 +102,10 @@ class Bot:
         history.append({"role": "user", "content": f"{name}: {text}"})
 
         if not self._should_reply(message, text, is_chat):
+            log.info("Решил не отвечать в peer %s (не обращались)", peer_id)
             return
 
+        log.info("Отвечаю в peer %s", peer_id)
         async with self._peer_lock(peer_id):
             await self.vk.set_typing(peer_id)
             messages = [{"role": "system", "content": self.config.system_prompt}]
@@ -137,7 +143,14 @@ async def main() -> None:
     config = Config()
     async with aiohttp.ClientSession() as session:
         vk = VkClient(session, config.vk_group_token, config.vk_api_version)
-        group_id = config.vk_group_id or await vk.get_own_group_id()
+        try:
+            group_id = config.vk_group_id or await vk.get_own_group_id()
+        except Exception:
+            log.exception(
+                "Не удалось определить группу VK — проверьте VK_GROUP_TOKEN "
+                "(нужны права «сообщения сообщества») и VK_GROUP_ID"
+            )
+            raise
         ai = AiClient(
             session,
             base_url=config.timeweb_base_url,

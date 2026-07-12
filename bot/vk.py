@@ -94,3 +94,10 @@ class VkClient:
                 log.warning("Сбой Long Poll (%s), повтор через 5 с", exc)
                 server = None
                 await asyncio.sleep(5)
+            except VkApiError as exc:
+                # Не даём ошибке VK API (неверный group_id, нет прав токена,
+                # не включён Long Poll и т.п.) уронить весь процесс —
+                # логируем причину и пробуем переподключиться.
+                log.error("Ошибка VK API при подключении к Long Poll: %s", exc)
+                server = None
+                await asyncio.sleep(5)
