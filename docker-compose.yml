@@ -15,6 +15,7 @@ services:
       BOT_NAMES: ${BOT_NAMES:-винхайлин,виня,vinhailyn}
       RANDOM_REPLY_CHANCE: ${RANDOM_REPLY_CHANCE:-0.05}
       HISTORY_SIZE: ${HISTORY_SIZE:-30}
+      DEBUG_CHAT_LOCAL_ID: ${DEBUG_CHAT_LOCAL_ID:-0}
     logging:
       driver: json-file
       options:
