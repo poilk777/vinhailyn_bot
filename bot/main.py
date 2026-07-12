@@ -158,7 +158,13 @@ async def startup_diagnostics(vk: VkClient, group: dict, debug_chat_local_id: in
             chat_peers.append(peer["id"])
 
     if debug_chat_local_id:
-        debug_peer_id = CHAT_PEER_OFFSET + debug_chat_local_id
+        # Принимаем и локальный ID (число из "sel=c123"), и уже готовый peer_id
+        # (если пользователь скопировал число >= 2 000 000 000 целиком).
+        debug_peer_id = (
+            debug_chat_local_id
+            if debug_chat_local_id >= CHAT_PEER_OFFSET
+            else CHAT_PEER_OFFSET + debug_chat_local_id
+        )
         if debug_peer_id not in chat_peers:
             log.info(
                 "DEBUG_CHAT_LOCAL_ID=%s задан явно, проверяю peer_id=%s точечно "
