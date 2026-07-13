@@ -129,11 +129,17 @@ class Bot:
         return random.random() < self.config.random_reply_chance
 
     async def _generate_and_send(
-        self, peer_id: int, history: deque, nudge: str | None = None
+        self,
+        peer_id: int,
+        history: deque,
+        nudge: str | None = None,
+        reply_to: int | None = None,
     ) -> None:
         """Просит ИИ сгенерировать ответ по истории беседы и отправляет его.
         nudge — служебная подсказка модели (не сохраняется в историю), используется,
-        когда бот пишет сам без повода (см. _send_idle_nudge)."""
+        когда бот пишет сам без повода (см. _send_idle_nudge).
+        reply_to — conversation_message_id сообщения, на которое отвечаем настоящим
+        VK-реплаем (цитатой); применяется только к первому «пузырю» ответа."""
         async with self._peer_lock(peer_id):
             await self.vk.set_typing(peer_id)
             messages = [{"role": "system", "content": self.config.system_prompt}]
@@ -147,16 +153,19 @@ class Bot:
             history.append({"role": "assistant", "content": answer})
             self._save_history()
             bubbles = split_into_bubbles(answer)
-            for bubble in bubbles:
+            for i, bubble in enumerate(bubbles):
                 await self.vk.set_typing(peer_id)
                 # Пауза перед отправкой, примерно как время печати человеком
                 delay = min(0.5 + len(bubble) / 25, 4.0) * random.uniform(0.7, 1.3)
                 await asyncio.sleep(delay)
-                await self.vk.send_message(peer_id, bubble)
+                await self.vk.send_message(
+                    peer_id, bubble, reply_to=reply_to if i == 0 else None
+                )
             log.info(
-                "Ответил в peer %s (%s сообщение(й), %s символов)%s",
+                "Ответил в peer %s (%s сообщение(й), %s символов)%s%s",
                 peer_id, len(bubbles), len(answer),
                 " [сам начал разговор]" if nudge else "",
+                " [реплай]" if reply_to else "",
             )
 
     def _schedule_idle_nudge(self, peer_id: int) -> None:
@@ -210,11 +219,7 @@ class Bot:
         action = message.get("action", {})
         if action.get("type") in ("chat_invite_user", "chat_invite_user_by_link"):
             if action.get("member_id") == -self.group_id:
-                await self.vk.send_message(
-                    peer_id,
-                    "Всем привет! Я Винхайлин, буду тут с вами общаться. "
-                    "Зовите по имени или отвечайте на мои сообщения 🙂",
-                )
+                await self.vk.send_message(peer_id, "Всем утричка✊")
             return
 
         text = self._mention_re.sub("", message.get("text", "")).strip()
@@ -234,7 +239,11 @@ class Bot:
             return
 
         log.info("Отвечаю в peer %s", peer_id)
-        await self._generate_and_send(peer_id, history)
+        reply_to = None
+        cmid = message.get("conversation_message_id")
+        if is_chat and cmid and random.random() < self.config.direct_reply_chance:
+            reply_to = cmid
+        await self._generate_and_send(peer_id, history, reply_to=reply_to)
 
     async def run(self) -> None:
         log.info("Бот запущен, группа %s, слушаю Long Poll…", self.group_id)

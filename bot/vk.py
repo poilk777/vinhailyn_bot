@@ -43,16 +43,20 @@ class VkClient:
         groups = response["groups"] if isinstance(response, dict) else response
         return groups[0]
 
-    async def send_message(self, peer_id: int, text: str) -> None:
+    async def send_message(
+        self, peer_id: int, text: str, reply_to: int | None = None
+    ) -> None:
         # ВК ограничивает сообщение 4096 символами — длинные ответы режем на части
         for start in range(0, len(text), VK_MESSAGE_LIMIT):
             chunk = text[start : start + VK_MESSAGE_LIMIT]
-            await self.call(
-                "messages.send",
-                peer_id=peer_id,
-                message=chunk,
-                random_id=random.randint(1, 2**31 - 1),
-            )
+            params = {
+                "peer_id": peer_id,
+                "message": chunk,
+                "random_id": random.randint(1, 2**31 - 1),
+            }
+            if reply_to:
+                params["reply_to"] = reply_to
+            await self.call("messages.send", **params)
 
     async def set_typing(self, peer_id: int) -> None:
         try:

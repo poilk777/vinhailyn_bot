@@ -12,8 +12,9 @@ services:
       AI_TEMPERATURE: ${AI_TEMPERATURE:-0.9}
       AI_MAX_TOKENS: ${AI_MAX_TOKENS:-600}
       SYSTEM_PROMPT: ${SYSTEM_PROMPT:-}
-      BOT_NAMES: ${BOT_NAMES:-винхайлин,виня,vinhailyn}
+      BOT_NAMES: ${BOT_NAMES:-влад,владислав,михайлин,vlad}
       RANDOM_REPLY_CHANCE: ${RANDOM_REPLY_CHANCE:-1.0}
+      DIRECT_REPLY_CHANCE: ${DIRECT_REPLY_CHANCE:-0.35}
       HISTORY_SIZE: ${HISTORY_SIZE:-30}
       HISTORY_FILE: ${HISTORY_FILE:-/app/data/history.json}
       IDLE_NUDGE_MINUTES: ${IDLE_NUDGE_MINUTES:-180}
