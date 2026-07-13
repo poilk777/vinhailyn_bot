@@ -97,9 +97,10 @@ class Config:
             if name.strip()
         )
     )
-    # Вероятность (0..1), что бот сам влезет в разговор без обращения к нему
+    # Вероятность (0..1), что бот ответит на сообщение в беседе без обращения
+    # к нему по имени/упоминания/реплая. 1.0 — отвечает вообще на всё подряд.
     random_reply_chance: float = field(
-        default_factory=lambda: _float("RANDOM_REPLY_CHANCE", 0.05)
+        default_factory=lambda: _float("RANDOM_REPLY_CHANCE", 1.0)
     )
     # Сколько последних сообщений беседы держать в контексте для ИИ
     history_size: int = field(default_factory=lambda: _int("HISTORY_SIZE", 30))
