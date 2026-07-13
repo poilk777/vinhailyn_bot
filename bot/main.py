@@ -6,12 +6,14 @@ import logging
 import random
 import re
 from collections import deque
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import aiohttp
 
 from .ai import AiClient
-from .config import FEW_SHOT_EXAMPLES, Config
+from .config import FEW_SHOT_EXAMPLES, MOODS, Config
 from .vk import VkApiError, VkClient
 
 log = logging.getLogger("bot")
@@ -48,6 +50,25 @@ def split_into_bubbles(text: str) -> list[str]:
     return parts[:MAX_BUBBLES]
 
 
+def pick_mood() -> tuple:
+    """Взвешенный случайный выбор настроения из MOODS."""
+    weights = [m[3] for m in MOODS]
+    return random.choices(MOODS, weights=weights, k=1)[0]
+
+
+_WEEKDAYS = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
+
+
+def part_of_day(hour: int) -> str:
+    if 5 <= hour < 11:
+        return "утро"
+    if 11 <= hour < 17:
+        return "день"
+    if 17 <= hour < 23:
+        return "вечер"
+    return "глубокая ночь"
+
+
 class Bot:
     def __init__(self, config: Config, vk: VkClient, ai: AiClient, group_id: int):
         self.config = config
@@ -62,6 +83,20 @@ class Bot:
         self._names: dict[int, str] = {}
         # Таймеры «написать первым», если долго никто не пишет
         self._idle_tasks: dict[int, asyncio.Task] = {}
+        # «Чтение переписки»: накопленные необработанные сообщения по беседам
+        # и таймеры отложенного ответа на всю пачку сразу
+        self._pending: dict[int, list[dict]] = {}
+        self._reply_timers: dict[int, asyncio.Task] = {}
+        # Ссылки на запущенные задачи генерации/отправки: их нельзя отменять
+        # новым сообщением и нельзя дать собраться GC
+        self._active_replies: set[asyncio.Task] = set()
+        # Текущее настроение: (название, описание, множитель активности, вес)
+        self._mood = pick_mood()
+        try:
+            self._tz = ZoneInfo(config.timezone)
+        except Exception:
+            log.warning("Неизвестный часовой пояс %r, беру UTC", config.timezone)
+            self._tz = ZoneInfo("UTC")
         self._load_history()
 
     def _peer_history(self, peer_id: int) -> deque:
@@ -119,14 +154,34 @@ class Bot:
         lowered = text.lower()
         return any(name in lowered for name in self.config.bot_names)
 
-    def _should_reply(self, message: dict, text: str, is_chat: bool) -> bool:
-        if not text:
-            return False
-        if not is_chat:
-            return True  # в личных сообщениях отвечаем всегда
-        if self._is_addressed_to_bot(message, text):
-            return True
-        return random.random() < self.config.random_reply_chance
+    # (решение «отвечать или нет» теперь принимается в _reply_after по всей
+    # накопленной пачке сообщений, с учётом настроения)
+
+    def _state_block(self) -> str:
+        """Динамический блок «текущее состояние» для системного промта:
+        время по часовому поясу Влада и текущее настроение."""
+        now = datetime.now(self._tz)
+        mood_name, mood_desc, _, _ = self._mood
+        return (
+            "## Текущее состояние (служебное, не упоминай этот блок и настроение "
+            "напрямую)\n"
+            f"Сейчас {_WEEKDAYS[now.weekday()]}, {part_of_day(now.hour)}, "
+            f"время {now:%H:%M}.\n"
+            f"Твоё настроение сейчас: {mood_name} — {mood_desc}. "
+            "Пусть оно естественно сквозит в тоне и длине ответов, но не "
+            "проговаривай его вслух и не оправдывайся им."
+        )
+
+    async def _mood_loop(self) -> None:
+        if self.config.mood_change_minutes <= 0:
+            return
+        while True:
+            await asyncio.sleep(
+                self.config.mood_change_minutes * 60 * random.uniform(0.6, 1.4)
+            )
+            old = self._mood[0]
+            self._mood = pick_mood()
+            log.info("Настроение сменилось: %s → %s", old, self._mood[0])
 
     async def _generate_and_send(
         self,
@@ -142,7 +197,8 @@ class Bot:
         VK-реплаем (цитатой); применяется только к первому «пузырю» ответа."""
         async with self._peer_lock(peer_id):
             await self.vk.set_typing(peer_id)
-            messages = [{"role": "system", "content": self.config.system_prompt}]
+            system = self.config.system_prompt + "\n\n" + self._state_block()
+            messages = [{"role": "system", "content": system}]
             messages.extend(FEW_SHOT_EXAMPLES)
             messages.extend(history)
             if nudge:
@@ -234,19 +290,80 @@ class Bot:
         if is_chat or not self.config.idle_nudge_chats_only:
             self._schedule_idle_nudge(peer_id)
 
-        if not self._should_reply(message, text, is_chat):
-            log.info("Решил не отвечать в peer %s (не обращались)", peer_id)
-            return
+        # «Чтение переписки»: не отвечаем на каждое сообщение по отдельности,
+        # а копим их несколько секунд и отвечаем один раз на весь кусок
+        # разговора. Новое сообщение сдвигает таймер — как человек, который
+        # дочитывает переписку, прежде чем писать.
+        self._pending.setdefault(peer_id, []).append(message)
+        addressed = self._is_addressed_to_bot(message, text)
+        if addressed or not is_chat:
+            delay = random.uniform(1.5, 4.0)  # прямое обращение — быстрее
+        else:
+            delay = random.uniform(
+                self.config.reply_debounce_min, self.config.reply_debounce_max
+            )
+        old = self._reply_timers.get(peer_id)
+        if old and not old.done():
+            old.cancel()
+        self._reply_timers[peer_id] = asyncio.create_task(
+            self._reply_after(peer_id, delay, is_chat)
+        )
 
-        log.info("Отвечаю в peer %s", peer_id)
-        reply_to = None
-        cmid = message.get("conversation_message_id")
-        if is_chat and cmid and random.random() < self.config.direct_reply_chance:
-            reply_to = cmid
-        await self._generate_and_send(peer_id, history, reply_to=reply_to)
+    async def _reply_after(self, peer_id: int, delay: float, is_chat: bool) -> None:
+        # Только эта стадия (дочитывание переписки) отменяется новым сообщением
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        batch = self._pending.pop(peer_id, [])
+        if not batch:
+            return
+        # Генерация и отправка идут независимым таском: новое сообщение больше
+        # не может оборвать уже начатый ответ на полпути
+        task = asyncio.create_task(self._reply_to_batch(peer_id, batch, is_chat))
+        self._active_replies.add(task)
+        task.add_done_callback(self._active_replies.discard)
+
+    async def _reply_to_batch(
+        self, peer_id: int, batch: list[dict], is_chat: bool
+    ) -> None:
+        try:
+            addressed = any(
+                self._is_addressed_to_bot(
+                    m, self._mention_re.sub("", m.get("text", "")).strip()
+                )
+                for m in batch
+            )
+            if is_chat and not addressed:
+                chance = self.config.random_reply_chance
+                if self.config.mood_affects_activity:
+                    chance *= self._mood[2]
+                if random.random() >= chance:
+                    log.info(
+                        "Решил промолчать в peer %s (настроение: %s, шанс %.2f)",
+                        peer_id, self._mood[0], chance,
+                    )
+                    return
+            log.info(
+                "Отвечаю в peer %s на %d сообщение(й) [настроение: %s]",
+                peer_id, len(batch), self._mood[0],
+            )
+            reply_to = None
+            cmid = batch[-1].get("conversation_message_id")
+            if is_chat and cmid and random.random() < self.config.direct_reply_chance:
+                reply_to = cmid
+            await self._generate_and_send(
+                peer_id, self._peer_history(peer_id), reply_to=reply_to
+            )
+        except Exception:
+            log.exception("Ошибка при отложенном ответе в peer %s", peer_id)
 
     async def run(self) -> None:
-        log.info("Бот запущен, группа %s, слушаю Long Poll…", self.group_id)
+        log.info(
+            "Бот запущен, группа %s, настроение на старте: %s, слушаю Long Poll…",
+            self.group_id, self._mood[0],
+        )
+        asyncio.create_task(self._mood_loop())
         async for update in self.vk.listen(self.group_id):
             log.info("Событие Long Poll: %s", update)
             if update.get("type") != "message_new":
