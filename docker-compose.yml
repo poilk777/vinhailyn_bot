@@ -9,13 +9,18 @@ services:
       TIMEWEB_AGENT_ID: ${TIMEWEB_AGENT_ID:?переменная TIMEWEB_AGENT_ID не задана}
       TIMEWEB_AGENT_TOKEN: ${TIMEWEB_AGENT_TOKEN:?переменная TIMEWEB_AGENT_TOKEN не задана}
       AI_MODEL: ${AI_MODEL:-gpt-5.4}
-      AI_TEMPERATURE: ${AI_TEMPERATURE:-1.0}
+      AI_TEMPERATURE: ${AI_TEMPERATURE:-0.9}
       AI_MAX_TOKENS: ${AI_MAX_TOKENS:-600}
       SYSTEM_PROMPT: ${SYSTEM_PROMPT:-}
       BOT_NAMES: ${BOT_NAMES:-винхайлин,виня,vinhailyn}
       RANDOM_REPLY_CHANCE: ${RANDOM_REPLY_CHANCE:-0.05}
       HISTORY_SIZE: ${HISTORY_SIZE:-30}
+      HISTORY_FILE: ${HISTORY_FILE:-/app/data/history.json}
+      IDLE_NUDGE_MINUTES: ${IDLE_NUDGE_MINUTES:-180}
+      IDLE_NUDGE_CHATS_ONLY: ${IDLE_NUDGE_CHATS_ONLY:-true}
       DEBUG_CHAT_LOCAL_ID: ${DEBUG_CHAT_LOCAL_ID:-0}
+    volumes:
+      - ./data:/app/data
     logging:
       driver: json-file
       options:

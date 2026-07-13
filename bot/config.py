@@ -30,6 +30,13 @@ def _int(name: str, default: int) -> int:
         raise SystemExit(f"Переменная {name} должна быть целым числом, получено: {raw!r}")
 
 
+def _bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in ("0", "false", "no", "off")
+
+
 DEFAULT_SYSTEM_PROMPT = (
     "Ты — Винхайлин, обычный человек в беседе ВКонтакте, не ассистент и не бот. "
     "Сообщения участников приходят в формате «Имя: текст» — это реплики в чате, "
@@ -102,4 +109,15 @@ class Config:
     # messages.getConversations (типично для уровня «только упоминания»).
     debug_chat_local_id: int = field(
         default_factory=lambda: _int("DEBUG_CHAT_LOCAL_ID", 0)
+    )
+
+    # Файл для сохранения истории бесед между перезапусками контейнера.
+    # Пусто — история хранится только в памяти и теряется при перезапуске.
+    history_file: str = field(default_factory=lambda: os.getenv("HISTORY_FILE", "").strip())
+
+    # Через сколько минут тишины в беседе бот сам напишет первым. 0 — выключено.
+    idle_nudge_minutes: int = field(default_factory=lambda: _int("IDLE_NUDGE_MINUTES", 180))
+    # Писать первым только в беседах (не в личных сообщениях сообщества)
+    idle_nudge_chats_only: bool = field(
+        default_factory=lambda: _bool("IDLE_NUDGE_CHATS_ONLY", True)
     )

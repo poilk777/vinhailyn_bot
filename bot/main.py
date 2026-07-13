@@ -1,10 +1,12 @@
 """Логика бота: слушает беседы, решает, когда ответить, и ходит в Timeweb AI."""
 
 import asyncio
+import json
 import logging
 import random
 import re
 from collections import deque
+from pathlib import Path
 
 import aiohttp
 
@@ -58,6 +60,9 @@ class Bot:
         # Ответы в одной беседе не должны идти параллельно
         self._locks: dict[int, asyncio.Lock] = {}
         self._names: dict[int, str] = {}
+        # Таймеры «написать первым», если долго никто не пишет
+        self._idle_tasks: dict[int, asyncio.Task] = {}
+        self._load_history()
 
     def _peer_history(self, peer_id: int) -> deque:
         if peer_id not in self._history:
@@ -68,6 +73,31 @@ class Bot:
         if peer_id not in self._locks:
             self._locks[peer_id] = asyncio.Lock()
         return self._locks[peer_id]
+
+    def _load_history(self) -> None:
+        if not self.config.history_file:
+            return
+        path = Path(self.config.history_file)
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for peer_id, items in data.items():
+                self._history[int(peer_id)] = deque(items, maxlen=self.config.history_size)
+            log.info("История загружена из %s (%d бесед)", path, len(self._history))
+        except Exception:
+            log.exception("Не удалось загрузить историю из %s", path)
+
+    def _save_history(self) -> None:
+        if not self.config.history_file:
+            return
+        path = Path(self.config.history_file)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = {str(peer_id): list(d) for peer_id, d in self._history.items()}
+            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            log.exception("Не удалось сохранить историю в %s", path)
 
     async def _sender_name(self, from_id: int) -> str:
         if from_id < 0:
@@ -97,6 +127,72 @@ class Bot:
         if self._is_addressed_to_bot(message, text):
             return True
         return random.random() < self.config.random_reply_chance
+
+    async def _generate_and_send(
+        self, peer_id: int, history: deque, nudge: str | None = None
+    ) -> None:
+        """Просит ИИ сгенерировать ответ по истории беседы и отправляет его.
+        nudge — служебная подсказка модели (не сохраняется в историю), используется,
+        когда бот пишет сам без повода (см. _send_idle_nudge)."""
+        async with self._peer_lock(peer_id):
+            await self.vk.set_typing(peer_id)
+            messages = [{"role": "system", "content": self.config.system_prompt}]
+            messages.extend(FEW_SHOT_EXAMPLES)
+            messages.extend(history)
+            if nudge:
+                messages.append({"role": "user", "content": nudge})
+            answer = await self.ai.chat(messages)
+            if not answer:
+                return
+            history.append({"role": "assistant", "content": answer})
+            self._save_history()
+            bubbles = split_into_bubbles(answer)
+            for bubble in bubbles:
+                await self.vk.set_typing(peer_id)
+                # Пауза перед отправкой, примерно как время печати человеком
+                delay = min(0.5 + len(bubble) / 25, 4.0) * random.uniform(0.7, 1.3)
+                await asyncio.sleep(delay)
+                await self.vk.send_message(peer_id, bubble)
+            log.info(
+                "Ответил в peer %s (%s сообщение(й), %s символов)%s",
+                peer_id, len(bubbles), len(answer),
+                " [сам начал разговор]" if nudge else "",
+            )
+
+    def _schedule_idle_nudge(self, peer_id: int) -> None:
+        if self.config.idle_nudge_minutes <= 0:
+            return
+        old = self._idle_tasks.get(peer_id)
+        if old and not old.done():
+            old.cancel()
+        self._idle_tasks[peer_id] = asyncio.create_task(self._idle_nudge_timer(peer_id))
+
+    async def _idle_nudge_timer(self, peer_id: int) -> None:
+        try:
+            await asyncio.sleep(self.config.idle_nudge_minutes * 60)
+        except asyncio.CancelledError:
+            return
+        try:
+            await self._send_idle_nudge(peer_id)
+        except Exception:
+            log.exception("Ошибка при попытке написать первым в peer %s", peer_id)
+
+    async def _send_idle_nudge(self, peer_id: int) -> None:
+        history = self._peer_history(peer_id)
+        if not history:
+            return  # не о чем писать без контекста
+        log.info(
+            "Тишина %s мин. в peer %s — пишу первым",
+            self.config.idle_nudge_minutes, peer_id,
+        )
+        await self._generate_and_send(
+            peer_id, history,
+            nudge=(
+                "[Сюда никто не писал уже долгое время. Напиши сам что-нибудь "
+                "короткое, чтобы оживить разговор — вспомни последнюю тему, "
+                "спроси что-то новое или пошути. Не упоминай, что было молчание.]"
+            ),
+        )
 
     async def handle_message(self, message: dict) -> None:
         peer_id = message["peer_id"]
@@ -128,32 +224,17 @@ class Bot:
         name = await self._sender_name(from_id)
         history = self._peer_history(peer_id)
         history.append({"role": "user", "content": f"{name}: {text}"})
+        self._save_history()
+
+        if is_chat or not self.config.idle_nudge_chats_only:
+            self._schedule_idle_nudge(peer_id)
 
         if not self._should_reply(message, text, is_chat):
             log.info("Решил не отвечать в peer %s (не обращались)", peer_id)
             return
 
         log.info("Отвечаю в peer %s", peer_id)
-        async with self._peer_lock(peer_id):
-            await self.vk.set_typing(peer_id)
-            messages = [{"role": "system", "content": self.config.system_prompt}]
-            messages.extend(FEW_SHOT_EXAMPLES)
-            messages.extend(history)
-            answer = await self.ai.chat(messages)
-            if not answer:
-                return
-            history.append({"role": "assistant", "content": answer})
-            bubbles = split_into_bubbles(answer)
-            for bubble in bubbles:
-                await self.vk.set_typing(peer_id)
-                # Пауза перед отправкой, примерно как время печати человеком
-                delay = min(0.5 + len(bubble) / 25, 4.0) * random.uniform(0.7, 1.3)
-                await asyncio.sleep(delay)
-                await self.vk.send_message(peer_id, bubble)
-            log.info(
-                "Ответил в peer %s (%s сообщение(й), %s символов)",
-                peer_id, len(bubbles), len(answer),
-            )
+        await self._generate_and_send(peer_id, history)
 
     async def run(self) -> None:
         log.info("Бот запущен, группа %s, слушаю Long Poll…", self.group_id)
