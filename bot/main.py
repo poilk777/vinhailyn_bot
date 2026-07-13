@@ -17,6 +17,34 @@ log = logging.getLogger("bot")
 # peer_id бесед начинается с 2 000 000 000
 CHAT_PEER_OFFSET = 2_000_000_000
 
+# Сколько сообщений подряд можно отправить как «пузыри» одного ответа
+MAX_BUBBLES = 3
+
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+_MD_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)([^*\n]+)\*(?!\*)")
+_MD_BULLET_RE = re.compile(r"^[ \t]*[-*•][ \t]+", re.MULTILINE)
+_MD_HEADER_RE = re.compile(r"^#{1,6}[ \t]+", re.MULTILINE)
+
+
+def _strip_markdown(text: str) -> str:
+    # Страховка на случай, если модель всё же вставит форматирование,
+    # несмотря на запрет в системном промпте — в VK-чате оно смотрится чужеродно.
+    text = _MD_BOLD_RE.sub(r"\1", text)
+    text = _MD_ITALIC_RE.sub(r"\1", text)
+    text = _MD_BULLET_RE.sub("", text)
+    text = _MD_HEADER_RE.sub("", text)
+    return text
+
+
+def split_into_bubbles(text: str) -> list[str]:
+    """Разбивает ответ на отдельные сообщения по двойному переносу строки —
+    так модель может имитировать человека, печатающего несколько сообщений подряд."""
+    text = _strip_markdown(text).strip()
+    parts = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if not parts:
+        return [text] if text else []
+    return parts[:MAX_BUBBLES]
+
 
 class Bot:
     def __init__(self, config: Config, vk: VkClient, ai: AiClient, group_id: int):
@@ -114,8 +142,17 @@ class Bot:
             if not answer:
                 return
             history.append({"role": "assistant", "content": answer})
-            await self.vk.send_message(peer_id, answer)
-            log.info("Ответил в peer %s (%s символов)", peer_id, len(answer))
+            bubbles = split_into_bubbles(answer)
+            for bubble in bubbles:
+                await self.vk.set_typing(peer_id)
+                # Пауза перед отправкой, примерно как время печати человеком
+                delay = min(0.5 + len(bubble) / 25, 4.0) * random.uniform(0.7, 1.3)
+                await asyncio.sleep(delay)
+                await self.vk.send_message(peer_id, bubble)
+            log.info(
+                "Ответил в peer %s (%s сообщение(й), %s символов)",
+                peer_id, len(bubbles), len(answer),
+            )
 
     async def run(self) -> None:
         log.info("Бот запущен, группа %s, слушаю Long Poll…", self.group_id)
