@@ -9,7 +9,7 @@ from collections import deque
 import aiohttp
 
 from .ai import AiClient
-from .config import Config
+from .config import FEW_SHOT_EXAMPLES, Config
 from .vk import VkApiError, VkClient
 
 log = logging.getLogger("bot")
@@ -137,6 +137,7 @@ class Bot:
         async with self._peer_lock(peer_id):
             await self.vk.set_typing(peer_id)
             messages = [{"role": "system", "content": self.config.system_prompt}]
+            messages.extend(FEW_SHOT_EXAMPLES)
             messages.extend(history)
             answer = await self.ai.chat(messages)
             if not answer:
